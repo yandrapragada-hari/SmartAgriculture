@@ -87,17 +87,63 @@ function parseSoilCondition(v: unknown): "Dry" | "Wet" {
 }
 
 /**
- * Build a normalised SensorReading from a raw Firebase snapshot value.
- * Handles missing fields (e.g. soilCondition / timestamp not always present).
+ * Firebase push IDs (e.g. "-OVxxx") encode the server-side Unix epoch ms
+ * in their first 8 characters using this 64-char alphabet.
+ * Decoding this gives the real wall-clock time the record was written —
+ * even if the ESP32 has no RTC and sends millis()-since-boot as timestamp.
  */
-function parseReading(v: Record<string, unknown>): SensorReading {
+const PUSH_CHARS = '-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz';
+
+function decodeFirebasePushId(id: string): number | null {
+  try {
+    let timestamp = 0;
+    for (let i = 0; i < 8; i++) {
+      const idx = PUSH_CHARS.indexOf(id[i]);
+      if (idx === -1) return null;
+      timestamp = timestamp * 64 + idx;
+    }
+    // Sanity-check: must be after year 2015
+    return timestamp > 1420070400000 ? timestamp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve timestamp to Unix epoch ms.
+ * 1. If the stored value is already a valid ms timestamp (after year 2020) → use it.
+ * 2. If it looks like epoch-seconds (> 1.5 billion) → multiply by 1000.
+ * 3. Otherwise (ESP32 sent millis-since-boot) → decode from Firebase push key.
+ */
+function parseTimestamp(v: unknown, pushKey?: string): number {
+  const raw = Number(v);
+  const YEAR_2020_MS = 1577836800000;
+  if (raw && !isNaN(raw)) {
+    if (raw > YEAR_2020_MS) return raw;           // Already valid ms
+    const asMs = raw * 1000;
+    if (asMs > YEAR_2020_MS) return asMs;         // Valid epoch-seconds → ms
+  }
+  // Stored timestamp is boot-relative / missing — use Firebase push key time
+  if (pushKey) {
+    const keyTs = decodeFirebasePushId(pushKey);
+    if (keyTs) return keyTs;
+  }
+  return Date.now();
+}
+
+/**
+ * Build a normalised SensorReading from a raw Firebase snapshot value.
+ * Accepts an optional pushKey to recover the real timestamp when the ESP32
+ * has no RTC and sends millis()-since-boot instead of Unix epoch.
+ */
+function parseReading(v: Record<string, unknown>, pushKey?: string): SensorReading {
   return {
     temperature: Number(v.temperature) || 0,
     humidity: Number(v.humidity) || 0,
     soilMoisture: Number(v.soilMoisture) || 0,
     pumpStatus: parsePumpStatus(v.pumpStatus),
     soilCondition: parseSoilCondition(v.soilCondition),
-    timestamp: Number(v.timestamp) || Date.now(),
+    timestamp: parseTimestamp(v.timestamp, pushKey),
   };
 }
 
@@ -238,7 +284,12 @@ export function useHistory() {
       setHistoryLoaded(true);
       const v = snap.val();
       if (v) {
-        const arr = Object.values(v as Record<string, Record<string, unknown>>).map(parseReading);
+        // Use Object.entries so we can pass the Firebase push key to parseReading.
+        // The push key encodes the real server timestamp, which lets us recover
+        // accurate dates even when the ESP32 sends millis()-since-boot.
+        const arr = Object.entries(v as Record<string, Record<string, unknown>>).map(
+          ([key, val]) => parseReading(val, key),
+        );
         arr.sort((a, b) => a.timestamp - b.timestamp);
         setHistory(arr);
         setTotalRecords(arr.length);

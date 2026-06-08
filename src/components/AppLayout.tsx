@@ -46,7 +46,13 @@ export function AppLayout() {
         })
       : "\u00a0";
   const timeLabel =
-    now instanceof Date ? now.toLocaleTimeString() : "\u00a0";
+    now instanceof Date
+      ? now.toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })
+      : "\u00a0";
 
   useEffect(() => {
     const saved = localStorage.getItem("theme");
@@ -194,10 +200,18 @@ export function AppLayout() {
               )}
             </button>
 
-            {/* Date/time */}
-            <div className="hidden sm:block min-w-[140px]">
-              <p className="text-sm font-semibold">{dateLabel}</p>
-              <p className="text-xs text-muted-foreground tabular-nums">
+            {/* Date/time — always visible */}
+            <div className="min-w-0 flex-shrink">
+              {/* Mobile: compact time only */}
+              <p className="sm:hidden text-xs font-semibold tabular-nums leading-tight">
+                {timeLabel}
+              </p>
+              <p className="sm:hidden text-[10px] text-muted-foreground leading-tight truncate">
+                {dateLabel}
+              </p>
+              {/* sm+: full date + time stack */}
+              <p className="hidden sm:block text-sm font-semibold">{dateLabel}</p>
+              <p className="hidden sm:block text-xs text-muted-foreground tabular-nums">
                 {timeLabel}
               </p>
             </div>
